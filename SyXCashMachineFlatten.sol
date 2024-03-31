@@ -642,6 +642,10 @@ interface IUniswapV2Router01 {
 
     function quote(uint256 amountA, uint256 reserveA, uint256 reserveB) external pure returns (uint256 amountB);
 
+    function getAmountsIn(uint256 amountOut, address[] calldata path)
+        external
+        view
+        returns (uint256[] memory amounts);
     function getAmountsOut(uint256 amountIn, address[] calldata path)
         external
         view
@@ -666,30 +670,50 @@ interface ITreasury {
     function withdraw(uint256 tokenAmount) external;
 }
 
+struct Fee {
+    uint256 buy;
+    uint256 sell;
+}
+
+struct Fees {
+    Fee transactionTax;
+    uint256 buyBackTax;
+    uint256 holderTax;
+    uint256 lpTax;
+}
+
+interface ICBANK {
+    function fees() external view returns (Fees memory);
+}
+
 contract AddressRegistry {
     constructor(address treasury) {
         coreTreasuryAddress = treasury;
     }
+
     address public constant coreAddress = address(0x6e8cE91124D57C37556672F8889cb89aF52a6746); //Cbank Token
     address public coreTreasuryAddress; //CBank  Treasury
     address public constant collateralAddress = address(0x55d398326f99059fF775485246999027B3197955); //BUSD
     address public constant routerAddress = address(0x10ED43C718714eb63d5aA57B78B54704E256024E);
 }
 
-contract CashMachine is ReentrancyGuard {
+contract CairoCashMachine is ReentrancyGuard {
     using SafeERC20 for IERC20;
-    AddressRegistry public registry;
-    address defaultReferrer;
-    IERC20 public collateralToken;
-    IERC20 coreToken;
-    ITreasury coreTreasury;
-    IUniswapV2Router02 public collateralRouter;
+
+    AddressRegistry public immutable registry;
+    address immutable defaultReferrer;
+    IERC20 public immutable collateralToken;
+    IERC20 immutable coreToken;
+    ITreasury immutable coreTreasury;
+    IUniswapV2Router02 public immutable collateralRouter;
     uint256 public s_lastUpdateTime;
     uint256 public s_totalSupply;
     uint256 public s_rewardPerTokenStored;
+    uint256 constant bps = 100;
+    uint256 public minOut;
     uint256[] depositRefShare = [100, 20, 10, 5, 5, 5, 5];
-    uint256[] withdrawRefShare = [50, 10, 10, 10, 10, 10, 5, 5];
-    uint256[] public REFERRENCE_APR = [109.5 ether, 146 ether, 182.5 ether];
+    uint256[] withdrawRefShare = [50, 10, 10, 10, 10, 5, 5];
+    uint256[] public REFERRENCE_APR = [1.095 ether, 1.46 ether, 1.825 ether];
 
     struct referral_data {
         uint256 available;
@@ -711,8 +735,7 @@ contract CashMachine is ReentrancyGuard {
     event Staked(address indexed user, uint256 indexed amount);
     event RewardsClaimed(address indexed user, uint256 indexed amount);
 
-
-    constructor(address default_referrer, string memory default_code, address _coreTreasury) {
+    constructor(address default_referrer, string memory default_code, address _coreTreasury,uint256 minimum_payout_claimable) {
         // Setup default refercode
         defaultReferrer = default_referrer;
         s_custom_code[default_code] = default_referrer;
@@ -722,11 +745,15 @@ contract CashMachine is ReentrancyGuard {
         coreToken = IERC20(registry.coreAddress());
         collateralToken = IERC20(registry.collateralAddress());
 
-        //the collateral router can be upgraded in the future
+        //the collateral router cannot  be upgraded in the future
         collateralRouter = IUniswapV2Router02(registry.routerAddress());
 
         //treasury setup
         coreTreasury = ITreasury(registry.coreTreasuryAddress());
+        //One-time approve
+        collateralToken.forceApprove(address(collateralRouter), type(uint256).max);
+        coreToken.forceApprove(address(collateralRouter), type(uint256).max);
+        minOut =minimum_payout_claimable;
     }
 
     /**
@@ -736,12 +763,12 @@ contract CashMachine is ReentrancyGuard {
         if (s_totalSupply == 0) {
             return s_rewardPerTokenStored;
         }
-        return s_rewardPerTokenStored + (((block.timestamp - s_lastUpdateTime) * rewardRate()) * 1e18) / s_totalSupply;
+        return s_rewardPerTokenStored + ((block.timestamp - s_lastUpdateTime) * rewardRate());
     }
 
     function rewardRate() public view returns (uint256) {
         uint256 referenceApr = choosePayout();
-        uint256 _rewardRate = (referenceApr / (365 * 100 * 24 hours) * s_totalSupply) / 1e18;
+        uint256 _rewardRate = (referenceApr / (365  * 24 hours));
         return _rewardRate;
     }
 
@@ -792,12 +819,12 @@ contract CashMachine is ReentrancyGuard {
         require(referralAddress != msg.sender, "Can't use your own code.");
         s_totalSupply += amount;
         s_balances[msg.sender] = amount;
-        s_max_payout[msg.sender] = (amount * 165) / 100;
+        s_max_payout[msg.sender] = (amount * (165 * bps)) / 10_000;
         s_rewards_claimed[msg.sender] = 0;
 
         emit Staked(msg.sender, amount);
         uint256 refPaid = referralDeposit(referralAddress, amount);
-        uint256 coreAmount = ((amount - refPaid) * 55) / 100;
+        uint256 coreAmount = ((amount - refPaid) * (55 * bps)) / 10_000;
         collateralToken.safeTransferFrom(msg.sender, address(this), amount);
         accumulateCore(address(coreTreasury), coreAmount);
     }
@@ -810,10 +837,11 @@ contract CashMachine is ReentrancyGuard {
         // Set referrer for the sender if not already set
         if (referral[msg.sender] == address(0)) {
             referral[msg.sender] = currentReferrer;
+            referralData[currentReferrer].referred++;
+            referralData[currentReferrer].myReferrs.push(msg.sender);
         }
         currentReferrer = referral[msg.sender]; // set referrer for the sender
-        referralData[currentReferrer].referred++;
-        referralData[currentReferrer].myReferrs.push(msg.sender);
+
         return distributionLoop(currentReferrer, _amount, true);
     }
 
@@ -828,7 +856,7 @@ contract CashMachine is ReentrancyGuard {
             shares = withdrawRefShare;
         }
         for (uint256 i = 0; i < 7 && currentReferrer != address(0); i++) {
-            uint256 rewAmount = (shares[i] * _amount) / 1000;
+            uint256 rewAmount = (shares[i] * _amount * bps) / 100_000;
             uint256 max = s_max_payout[currentReferrer];
             uint256 rewards_earned = totalEarnings(currentReferrer);
             bool isDefault = currentReferrer == defaultReferrer;
@@ -857,19 +885,25 @@ contract CashMachine is ReentrancyGuard {
         return distributionLoop(currentReferrer, _amount, false);
     }
 
-    function claimReward() external updateReward(msg.sender) nonReentrant {
+    function claimReward(uint256 reward) external updateReward(msg.sender) nonReentrant {
         uint256 claimed = s_rewards_claimed[msg.sender];
         require(s_balances[msg.sender] > 0, "You need to deposit funds before claiming rewards.");
         require(claimed < s_max_payout[msg.sender], "Max Payout Reached!!!");
-        uint256 reward = s_rewards[msg.sender];
+
         if (reward + claimed > s_max_payout[msg.sender]) {
             reward = s_max_payout[msg.sender] - claimed;
         }
+        require(reward>=minOut || (s_max_payout[msg.sender] - claimed) < minOut,"Invalid rewards amount");
+        require(reward <= s_rewards[msg.sender],"Invalid withdraw amount");
         if (reward > collateralToken.balanceOf(address(this))) {
-            (, uint256 _coreAmount) = estimateCollateralToCore(reward);
-            liquidateCore(address(this), (_coreAmount * 110) / 100);
+            // Calcuating amount to lquidate
+            // using 112 % of reward amount to convert as 10% will be paid as tax, 10 % of 112 = 12 remaining 108
+            uint256 amountToGet = (reward * 112) / 100;
+            (, uint256 _coreAmount) = estimateCollateralToCore(amountToGet);
+            require(coreToken.balanceOf(address(coreTreasury)) >= _coreAmount,"Wait for treasury to be paid");
+            liquidateCore(address(this), _coreAmount);
         }
-        s_rewards[msg.sender] = 0;
+        s_rewards[msg.sender] -= reward;
         referralData[msg.sender].available = 0;
         s_rewards_claimed[msg.sender] += reward;
         emit RewardsClaimed(msg.sender, reward);
@@ -877,7 +911,8 @@ contract CashMachine is ReentrancyGuard {
         reward -= referralWithdraw(reward);
         collateralToken.safeTransfer(msg.sender, reward);
     }
-      function updateReferralCode(string calldata code) external {
+
+    function updateReferralCode(string calldata code) external {
         require(
             s_custom_code[code] == address(0) || s_custom_code[code] == msg.sender,
             "Already used! Please select a different code!"
@@ -886,7 +921,6 @@ contract CashMachine is ReentrancyGuard {
         s_custom_code[code] = msg.sender;
         s_address_to_code[msg.sender] = code;
     }
-
 
     /**
      *
@@ -905,15 +939,12 @@ contract CashMachine is ReentrancyGuard {
         _;
     }
 
-  
     modifier moreThanZero(uint256 amount) {
-        if (amount == 0 || amount < 200e18) {
+        if (amount < 200e18) {
             revert NeedsMoreThanZero();
         }
         _;
     }
-
-  
 
     function liquidateCore(address destination, uint256 _amount) private returns (uint256 collateralAmount) {
         //Convert from collateral to backed
@@ -925,41 +956,31 @@ contract CashMachine is ReentrancyGuard {
 
         //withdraw from treasury
         coreTreasury.withdraw(_amount);
-
-        //approve & swap
-        safeApprove(
-            address(coreToken), address(collateralRouter), _amount, "ElephantYieldEngine: liquidateCore, approve"
-        );
-
+        // Fethes lp tax and calculate estimaed amount out.
+        (, uint256 lpTax) = getFee();
+        uint256[] memory amounts = collateralRouter.getAmountsOut(_amount, path);
+        uint256 estimatedAmountOut = (amounts[2] * (10000 - lpTax)) / 100_00;
         uint256 initialBalance = collateralToken.balanceOf(destination);
 
         collateralRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-            _amount, 0, path, destination, block.timestamp
+            _amount, estimatedAmountOut, path, destination, block.timestamp
         );
 
         collateralAmount = collateralToken.balanceOf(destination) - (initialBalance);
     }
 
-    function accumulateCore(address destination, uint256 _amount) private returns (uint256 collateralAmount) {
+    function accumulateCore(address destination, uint256 _amount) private {
         //Convert from collateral to backed
         address[] memory path = new address[](3);
 
         path[0] = address(collateralToken);
         path[1] = collateralRouter.WETH();
         path[2] = address(coreToken);
-
-        //approve & swap
-        safeApprove(
-            address(collateralToken), address(collateralRouter), _amount, "CairoYieldEngine: accumalateCore, approve"
-        );
-
-        uint256 initialBalance = collateralToken.balanceOf(destination);
-
+        (uint256 fee,) = getFee();
+        uint256[] memory amounts = collateralRouter.getAmountsOut(_amount, path);
         collateralRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-            _amount, 0, path, destination, block.timestamp
+            _amount, (amounts[2] * (10000 - fee)) / 100_00, path, destination, block.timestamp
         );
-
-        collateralAmount = collateralToken.balanceOf(destination) - (initialBalance);
     }
 
     function estimateCollateralToCore(uint256 collateralAmount)
@@ -969,21 +990,21 @@ contract CashMachine is ReentrancyGuard {
     {
         //Convert from collateral to core using router
         address[] memory path = new address[](3);
-        path[0] = address(collateralToken);
+        path[0] = address(coreToken);
         path[1] = collateralRouter.WETH();
-        path[2] = address(coreToken);
+        path[2] = address(collateralToken);
 
-        uint256[] memory amounts = collateralRouter.getAmountsOut(collateralAmount, path);
+        uint256[] memory amounts = collateralRouter.getAmountsIn(collateralAmount, path);
 
         //Use core router to get amount of coreTokens required to cover
         wethAmount = amounts[1];
-        coreAmount = amounts[2];
+        coreAmount = amounts[0];
     }
 
     function calculateAdditionalTax(address user, uint256 amount) internal view returns (uint256) {
         uint256 balance = s_balances[user];
         uint256 depositShare = (balance * 100) / collateralToken.balanceOf(address(this));
-        uint256 taxableAmount = (amount * taxFrequency(depositShare)) / 1000;
+        uint256 taxableAmount = (amount * taxFrequency(depositShare) * bps) / 100_000;
         uint256 netWithdrawal = amount - taxableAmount;
         return netWithdrawal;
     }
@@ -1012,8 +1033,6 @@ contract CashMachine is ReentrancyGuard {
         return 0;
     }
 
-  
-
     function myList(address user) public view returns (address[] memory) {
         return referralData[user].myReferrs;
     }
@@ -1021,8 +1040,15 @@ contract CashMachine is ReentrancyGuard {
     function getStakes(address account) public view returns (uint256) {
         return s_balances[account];
     }
-      function safeApprove(address token, address to, uint256 value, string memory notes) internal {
-        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.approve.selector, to, value));
-        require(success && (data.length == 0 || abi.decode(data, (bool))), string.concat("SA", notes));
+
+    /*
+    * @dev Returns the buyTax and lpTax tax from CBANK contract.
+    * Tax will be only applied to buy and lp even in future versions
+     */
+    function getFee() public view returns (uint256, uint256) {
+        Fees memory fee = ICBANK(address(coreToken)).fees();
+        return (fee.transactionTax.buy, fee.lpTax);
     }
+   
+
 }
