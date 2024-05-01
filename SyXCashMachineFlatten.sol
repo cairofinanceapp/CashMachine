@@ -646,10 +646,7 @@ interface IUniswapV2Router01 {
         external
         view
         returns (uint256[] memory amounts);
-    function getAmountsOut(uint256 amountIn, address[] calldata path)
-        external
-        view
-        returns (uint256[] memory amounts);
+  
 }
 
 // pragma solidity >=0.6.2;
@@ -682,9 +679,6 @@ struct Fees {
     uint256 lpTax;
 }
 
-interface ICBANK {
-    function fees() external view returns (Fees memory);
-}
 
 contract AddressRegistry {
     constructor(address treasury) {
@@ -709,10 +703,9 @@ contract CairoCashMachine is ReentrancyGuard {
     uint256 public s_lastUpdateTime;
     uint256 public s_totalSupply;
     uint256 public s_rewardPerTokenStored;
-    uint256 constant bps = 100;
     uint256 public minOut;
-    uint256[] depositRefShare = [100, 20, 10, 5, 5, 5, 5];
-    uint256[] withdrawRefShare = [50, 10, 10, 10, 10, 5, 5];
+    uint256[] depositRefShare = [1000, 200, 100, 50, 50, 50, 50];
+    uint256[] withdrawRefShare = [500, 100, 100, 100, 100, 50, 50];
     uint256[] public REFERRENCE_APR = [1.095 ether, 1.46 ether, 1.825 ether];
 
     struct referral_data {
@@ -725,7 +718,7 @@ contract CairoCashMachine is ReentrancyGuard {
     mapping(address => uint256) public s_userRewardPerTokenPaid;
     mapping(address => uint256) public s_rewards;
     mapping(address => uint256) public s_max_payout;
-    mapping(address => address) referral;
+    mapping(address => address) public referral;
     mapping(address => referral_data) public referralData;
     mapping(address => uint256) public s_balances;
     mapping(string => address) public s_custom_code;
@@ -768,7 +761,9 @@ contract CairoCashMachine is ReentrancyGuard {
 
     function rewardRate() public view returns (uint256) {
         uint256 referenceApr = choosePayout();
-        uint256 _rewardRate = (referenceApr / (365  * 24 hours));
+
+  
+        uint256 _rewardRate = (referenceApr  / (365  * 24 hours));
         return _rewardRate;
     }
 
@@ -783,7 +778,7 @@ contract CairoCashMachine is ReentrancyGuard {
 
     function _earned(address account) private view returns (uint256) {
         return
-            ((s_balances[account] * (rewardPerToken() - s_userRewardPerTokenPaid[account])) / 1e18) + s_rewards[account];
+           ( ((s_balances[account] * (rewardPerToken() - s_userRewardPerTokenPaid[account])) / 1e18) ) + s_rewards[account];
     }
 
     function totalEarnings(address account) public view returns (uint256) {
@@ -819,12 +814,12 @@ contract CairoCashMachine is ReentrancyGuard {
         require(referralAddress != msg.sender, "Can't use your own code.");
         s_totalSupply += amount;
         s_balances[msg.sender] = amount;
-        s_max_payout[msg.sender] = (amount * (165 * bps)) / 10_000;
+        s_max_payout[msg.sender] = (amount * 16_500) / 10_000;
         s_rewards_claimed[msg.sender] = 0;
 
         emit Staked(msg.sender, amount);
         uint256 refPaid = referralDeposit(referralAddress, amount);
-        uint256 coreAmount = ((amount - refPaid) * (55 * bps)) / 10_000;
+        uint256 coreAmount = ((amount - refPaid) * 5500 ) / 10_000;
         collateralToken.safeTransferFrom(msg.sender, address(this), amount);
         accumulateCore(address(coreTreasury), coreAmount);
     }
@@ -856,7 +851,7 @@ contract CairoCashMachine is ReentrancyGuard {
             shares = withdrawRefShare;
         }
         for (uint256 i = 0; i < 7 && currentReferrer != address(0); i++) {
-            uint256 rewAmount = (shares[i] * _amount * bps) / 100_000;
+            uint256 rewAmount = (shares[i] * _amount ) / 10_000;
             uint256 max = s_max_payout[currentReferrer];
             uint256 rewards_earned = totalEarnings(currentReferrer);
             bool isDefault = currentReferrer == defaultReferrer;
@@ -885,16 +880,15 @@ contract CairoCashMachine is ReentrancyGuard {
         return distributionLoop(currentReferrer, _amount, false);
     }
 
-    function claimReward(uint256 reward) external updateReward(msg.sender) nonReentrant {
+    function claimReward() external updateReward(msg.sender) nonReentrant {
         uint256 claimed = s_rewards_claimed[msg.sender];
         require(s_balances[msg.sender] > 0, "You need to deposit funds before claiming rewards.");
         require(claimed < s_max_payout[msg.sender], "Max Payout Reached!!!");
-
+        uint256 reward = s_rewards[msg.sender];
         if (reward + claimed > s_max_payout[msg.sender]) {
             reward = s_max_payout[msg.sender] - claimed;
         }
         require(reward>=minOut || (s_max_payout[msg.sender] - claimed) < minOut,"Invalid rewards amount");
-        require(reward <= s_rewards[msg.sender],"Invalid withdraw amount");
         if (reward > collateralToken.balanceOf(address(this))) {
             // Calcuating amount to lquidate
             // using 112 % of reward amount to convert as 10% will be paid as tax, 10 % of 112 = 12 remaining 108
@@ -903,7 +897,7 @@ contract CairoCashMachine is ReentrancyGuard {
             require(coreToken.balanceOf(address(coreTreasury)) >= _coreAmount,"Wait for treasury to be paid");
             liquidateCore(address(this), _coreAmount);
         }
-        s_rewards[msg.sender] -= reward;
+        s_rewards[msg.sender] -= 0;
         referralData[msg.sender].available = 0;
         s_rewards_claimed[msg.sender] += reward;
         emit RewardsClaimed(msg.sender, reward);
@@ -957,13 +951,12 @@ contract CairoCashMachine is ReentrancyGuard {
         //withdraw from treasury
         coreTreasury.withdraw(_amount);
         // Fethes lp tax and calculate estimaed amount out.
-        (, uint256 lpTax) = getFee();
-        uint256[] memory amounts = collateralRouter.getAmountsOut(_amount, path);
-        uint256 estimatedAmountOut = (amounts[2] * (10000 - lpTax)) / 100_00;
+        
+      
         uint256 initialBalance = collateralToken.balanceOf(destination);
 
         collateralRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-            _amount, estimatedAmountOut, path, destination, block.timestamp
+            _amount, 0, path, destination, block.timestamp
         );
 
         collateralAmount = collateralToken.balanceOf(destination) - (initialBalance);
@@ -976,10 +969,8 @@ contract CairoCashMachine is ReentrancyGuard {
         path[0] = address(collateralToken);
         path[1] = collateralRouter.WETH();
         path[2] = address(coreToken);
-        (uint256 fee,) = getFee();
-        uint256[] memory amounts = collateralRouter.getAmountsOut(_amount, path);
         collateralRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-            _amount, (amounts[2] * (10000 - fee)) / 100_00, path, destination, block.timestamp
+            _amount,0, path, destination, block.timestamp
         );
     }
 
@@ -1004,7 +995,7 @@ contract CairoCashMachine is ReentrancyGuard {
     function calculateAdditionalTax(address user, uint256 amount) internal view returns (uint256) {
         uint256 balance = s_balances[user];
         uint256 depositShare = (balance * 100) / collateralToken.balanceOf(address(this));
-        uint256 taxableAmount = (amount * taxFrequency(depositShare) * bps) / 100_000;
+        uint256 taxableAmount = (amount * taxFrequency(depositShare)) / 10_000;
         uint256 netWithdrawal = amount - taxableAmount;
         return netWithdrawal;
     }
@@ -1012,23 +1003,23 @@ contract CairoCashMachine is ReentrancyGuard {
     function taxFrequency(uint256 depositShare) internal pure returns (uint256) {
         if (depositShare >= 1) {
             if (depositShare == 1) return 5;
-            else if (depositShare == 2) return 75; // 7.5%
+            else if (depositShare == 2) return 750; // 7.5%
 
-            else if (depositShare == 3) return 100; // 10%
+            else if (depositShare == 3) return 1000; // 10%
 
-            else if (depositShare == 4) return 125; // 12.5%
+            else if (depositShare == 4) return 1250; // 12.5%
 
-            else if (depositShare == 5) return 150; // 15%
+            else if (depositShare == 5) return 1500; // 15%
 
-            else if (depositShare == 6) return 175; // 17.5%
+            else if (depositShare == 6) return 1750; // 17.5%
 
-            else if (depositShare == 7) return 200; // 20%
+            else if (depositShare == 7) return 2000; // 20%
 
-            else if (depositShare == 8) return 250; // 25%
+            else if (depositShare == 8) return 2500; // 25%
 
-            else if (depositShare == 9) return 300; // 30%
+            else if (depositShare == 9) return 3000; // 30%
 
-            else if (depositShare >= 10) return 350; // 35%
+            else if (depositShare >= 10) return 3500; // 35%
         }
         return 0;
     }
@@ -1041,14 +1032,7 @@ contract CairoCashMachine is ReentrancyGuard {
         return s_balances[account];
     }
 
-    /*
-    * @dev Returns the buyTax and lpTax tax from CBANK contract.
-    * Tax will be only applied to buy and lp even in future versions
-     */
-    function getFee() public view returns (uint256, uint256) {
-        Fees memory fee = ICBANK(address(coreToken)).fees();
-        return (fee.transactionTax.buy, fee.lpTax);
-    }
+
    
 
 }
