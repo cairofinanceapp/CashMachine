@@ -201,7 +201,7 @@ abstract contract Ownable is Context {
 }
 
 contract Treasury is Ownable {
-        IERC20 public token; // address of the BEP20 token traded on this contract
+        IERC20 public token; // address of the BEP20 token               traded on this contract
         address yeildEngine;
 
 	//There can  be a general purpose treasury for any 
