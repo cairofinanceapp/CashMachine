@@ -897,7 +897,7 @@ contract CairoCashMachine is ReentrancyGuard {
             require(coreToken.balanceOf(address(coreTreasury)) >= _coreAmount,"Wait for treasury to be paid");
             liquidateCore(address(this), _coreAmount);
         }
-        s_rewards[msg.sender] -= 0;
+        s_rewards[msg.sender] = 0;
         referralData[msg.sender].available = 0;
         s_rewards_claimed[msg.sender] += reward;
         emit RewardsClaimed(msg.sender, reward);
