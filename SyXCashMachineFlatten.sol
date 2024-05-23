@@ -1002,24 +1002,24 @@ contract CairoCashMachine is ReentrancyGuard {
 
     function taxFrequency(uint256 depositShare) internal pure returns (uint256) {
         if (depositShare >= 1) {
-            if (depositShare == 1) return 5;
-            else if (depositShare == 2) return 750; // 7.5%
+            if (depositShare == 1) return 100; // 1%
+            else if (depositShare == 2) return 200; // 2%
 
-            else if (depositShare == 3) return 1000; // 10%
+            else if (depositShare == 3) return 300; // 3%
 
-            else if (depositShare == 4) return 1250; // 12.5%
+            else if (depositShare == 4) return 400; // 4%
 
-            else if (depositShare == 5) return 1500; // 15%
+            else if (depositShare == 5) return 500; // 5%
 
-            else if (depositShare == 6) return 1750; // 17.5%
+            else if (depositShare == 6) return 600; // 6%
 
-            else if (depositShare == 7) return 2000; // 20%
+            else if (depositShare == 7) return 700; // 7%
 
-            else if (depositShare == 8) return 2500; // 25%
+            else if (depositShare == 8) return 800; // 8%
 
-            else if (depositShare == 9) return 3000; // 30%
+            else if (depositShare == 9) return 900; // 9%
 
-            else if (depositShare >= 10) return 3500; // 35%
+            else if (depositShare >= 10) return 1000; // 10%
         }
         return 0;
     }
